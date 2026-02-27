@@ -2,18 +2,19 @@
 
 namespace App\Command;
 
-use App\Provider\LLMProviderInterface;
-use App\Provider\OpenAIProvider;
 use App\Provider\AnthropicProvider;
 use App\Provider\GeminiProvider;
 use App\Provider\JudgeProvider;
+use App\Provider\LLMProviderInterface;
+use App\Provider\OpenAIProvider;
 use GuzzleHttp\Promise\Utils;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
-use Symfony\Component\Console\Helper\ProgressBar;
 
 class CompareCommand extends Command
 {
@@ -54,14 +55,23 @@ class CompareCommand extends Command
             $name = $provider->getName();
 
             // Create a per-provider progress bar. Use a single step that completes when the promise settles.
-            if ($isDecorated) {
-                $io->writeln(sprintf('<info>[%s]</info> starting request...', $name));
-                $bar = new ProgressBar($output, 1);
+            if ($isDecorated && $output instanceof ConsoleOutputInterface) {
+                $section = $output->section();
+                $section->writeln(sprintf('<info>[%s]</info> starting request...', $name));
+                $bar = new ProgressBar($section, 1);
                 $bar->setFormat(' [%bar%] %percent:3s%% — %message%');
                 // Custom message placeholder
                 $bar->setMessage('waiting');
                 $bar->start();
-                $progressBars[$name] = $bar;
+                $progressBars[$name] = ['bar' => $bar, 'section' => $section];
+            } elseif ($isDecorated) {
+                // Fallback if not ConsoleOutputInterface but decorated
+                $io->writeln(sprintf('<info>[%s]</info> starting request...', $name));
+                $bar = new ProgressBar($output, 1);
+                $bar->setFormat(' [%bar%] %percent:3s%% — %message%');
+                $bar->setMessage('waiting');
+                $bar->start();
+                $progressBars[$name] = ['bar' => $bar];
             } else {
                 // Fallback simple line for non-decorated outputs (e.g., in tests/CI)
                 $io->writeln(sprintf('[%s] request started...', $name));
@@ -73,24 +83,32 @@ class CompareCommand extends Command
             $promise = $promise->then(
                 function ($value) use ($io, $name, $progressBars) {
                     if (isset($progressBars[$name])) {
-                        $progressBars[$name]->setMessage('completed');
-                        $progressBars[$name]->advance(1);
-                        $progressBars[$name]->finish();
-                        $io->newLine();
+                        $bar = $progressBars[$name]['bar'];
+                        $bar->setMessage('completed');
+                        $bar->finish();
+                        if (!isset($progressBars[$name]['section'])) {
+                            $io->newLine();
+                        }
                     } else {
                         $io->writeln(sprintf('[%s] completed', $name));
                     }
                     return $value;
                 },
                 function ($reason) use ($io, $name, $progressBars) {
+                    $errorMessage = sprintf('<error>[%s] failed: %s</error>', $name, method_exists($reason, 'getMessage') ? $reason->getMessage() : (string) $reason);
                     if (isset($progressBars[$name])) {
-                        $progressBars[$name]->setMessage('failed');
-                        // Ensure bar finishes even on failure
-                        $progressBars[$name]->advance(max(0, 1 - $progressBars[$name]->getProgress()));
-                        $progressBars[$name]->finish();
-                        $io->newLine();
+                        $bar = $progressBars[$name]['bar'];
+                        $bar->setMessage('failed');
+                        $bar->finish();
+                        if (isset($progressBars[$name]['section'])) {
+                            $progressBars[$name]['section']->writeln($errorMessage);
+                        } else {
+                            $io->newLine();
+                            $io->writeln($errorMessage);
+                        }
+                    } else {
+                        $io->writeln($errorMessage);
                     }
-                    $io->writeln(sprintf('<error>[%s] failed: %s</error>', $name, method_exists($reason, 'getMessage') ? $reason->getMessage() : (string) $reason));
                     // Re-throw to keep promise state rejected for settle()
                     throw $reason;
                 }
