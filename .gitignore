@@ -1,0 +1,20 @@
+# PHP
+/vendor/
+composer.phar
+.phpunit.result.cache
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE - JetBrains
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+.output.txt

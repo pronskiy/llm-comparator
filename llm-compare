@@ -1,0 +1,17 @@
+#!/usr/bin/env php
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+use App\Command\CompareCommand;
+use Dotenv\Dotenv;
+use Symfony\Component\Console\Application;
+
+$dotenv = Dotenv::createImmutable(__DIR__);
+$dotenv->safeLoad();
+
+$command = new CompareCommand();
+$application = new Application('LLM Compare', '1.0.0');
+$application->add($command);
+$application->setDefaultCommand($command->getName(), true);
+$application->run();
