@@ -13,6 +13,7 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\Console\Helper\ProgressBar;
 
 class CompareCommand extends Command
 {
@@ -45,9 +46,57 @@ class CompareCommand extends Command
         $io->note('Querying providers in parallel...');
 
         $promises = [];
+        $progressBars = [];
+        $isDecorated = $output->isDecorated();
+        
         foreach ($this->providers as $provider) {
             /** @var LLMProviderInterface $provider */
-            $promises[$provider->getName()] = $provider->queryAsync($prompt);
+            $name = $provider->getName();
+
+            // Create a per-provider progress bar. Use a single step that completes when the promise settles.
+            if ($isDecorated) {
+                $io->writeln(sprintf('<info>[%s]</info> starting request...', $name));
+                $bar = new ProgressBar($output, 1);
+                $bar->setFormat(' [%bar%] %percent:3s%% — %message%');
+                // Custom message placeholder
+                $bar->setMessage('waiting');
+                $bar->start();
+                $progressBars[$name] = $bar;
+            } else {
+                // Fallback simple line for non-decorated outputs (e.g., in tests/CI)
+                $io->writeln(sprintf('[%s] request started...', $name));
+            }
+
+            $promise = $provider->queryAsync($prompt);
+
+            // When fulfilled or rejected, complete the bar and print status
+            $promise = $promise->then(
+                function ($value) use ($io, $name, $progressBars) {
+                    if (isset($progressBars[$name])) {
+                        $progressBars[$name]->setMessage('completed');
+                        $progressBars[$name]->advance(1);
+                        $progressBars[$name]->finish();
+                        $io->newLine();
+                    } else {
+                        $io->writeln(sprintf('[%s] completed', $name));
+                    }
+                    return $value;
+                },
+                function ($reason) use ($io, $name, $progressBars) {
+                    if (isset($progressBars[$name])) {
+                        $progressBars[$name]->setMessage('failed');
+                        // Ensure bar finishes even on failure
+                        $progressBars[$name]->advance(max(0, 1 - $progressBars[$name]->getProgress()));
+                        $progressBars[$name]->finish();
+                        $io->newLine();
+                    }
+                    $io->writeln(sprintf('<error>[%s] failed: %s</error>', $name, method_exists($reason, 'getMessage') ? $reason->getMessage() : (string) $reason));
+                    // Re-throw to keep promise state rejected for settle()
+                    throw $reason;
+                }
+            );
+
+            $promises[$name] = $promise;
         }
 
         $results = Utils::settle($promises)->wait();
